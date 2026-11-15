@@ -1,0 +1,212 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "id": "e25b34948cfc4f418ea2dfc004b2cde2",
+      "type": "relay_on",
+      "x": 440,
+      "y": 0,
+      "params": {
+        "port": "COM3",
+        "channel": 0
+      }
+    },
+    {
+      "id": "e077ecd3923d4ff096ad8fdaa88b25d0",
+      "type": "relay_off",
+      "x": 0,
+      "y": 0,
+      "params": {
+        "port": "COM3",
+        "channel": 0
+      }
+    },
+    {
+      "id": "abb0c0b3fa4a48beb6b5cce68469ee5b",
+      "type": "power_on",
+      "x": 0,
+      "y": 155,
+      "params": {
+        "ini": "${APPDIR}/assets/device.ini"
+      }
+    },
+    {
+      "id": "b027ce4c48e04d7eacf16ba9504ee716",
+      "type": "i2c_read",
+      "x": 0,
+      "y": 310,
+      "params": {
+        "slave": "0x40",
+        "register": "0x00cc",
+        "address_bits": 16,
+        "data_bits": 32,
+        "expected": "0x00333300",
+        "mask": "0xffffffff"
+      }
+    },
+    {
+      "id": "e9ff9295db37438887e5a11918f42f73",
+      "type": "i2c_read",
+      "x": 440,
+      "y": 310,
+      "params": {
+        "slave": "0x40",
+        "register": "0x00cc",
+        "address_bits": 16,
+        "data_bits": 32,
+        "expected": "",
+        "mask": "0xffffffff"
+      }
+    },
+    {
+      "id": "e58bd41eb1014f5fbae496f2b3b932c9",
+      "type": "capture",
+      "x": 660,
+      "y": 310,
+      "params": {
+        "output": "${RUNDIR}/图片/capture"
+      }
+    },
+    {
+      "id": "3a7c9ede09c947019d26dae1dd53ee20",
+      "type": "metrics",
+      "x": 0,
+      "y": 465,
+      "params": {
+        "fps_min": "",
+        "fps_max": "",
+        "dn_min": "",
+        "dn_max": ""
+      }
+    },
+    {
+      "id": "2f653f84caaf4887af759d2bfe69ddad",
+      "type": "power_off",
+      "x": 220,
+      "y": 465,
+      "params": {}
+    },
+    {
+      "id": "f7909c2ccee445a4852ae7a6603f4cf1",
+      "type": "relay_off",
+      "x": 440,
+      "y": 465,
+      "params": {
+        "port": "COM3",
+        "channel": 0
+      }
+    },
+    {
+      "id": "7ef9008f49634178897fbe0166d27155",
+      "type": "wait",
+      "x": 220,
+      "y": 310,
+      "params": {
+        "seconds": 0.1
+      }
+    },
+    {
+      "id": "2893bed139ac40f6a0ced722198813cf",
+      "type": "wait",
+      "x": 220,
+      "y": 0,
+      "params": {
+        "seconds": 5.0
+      }
+    },
+    {
+      "id": "1508f23dd44040f7a03fe78a4c7bf484",
+      "type": "wait",
+      "x": 660,
+      "y": 0,
+      "params": {
+        "seconds": 5.0
+      }
+    },
+    {
+      "id": "d5e4f6e8ce3b49e985da044e5348dc95",
+      "type": "wait",
+      "x": 440,
+      "y": 155,
+      "params": {
+        "seconds": 10.0
+      }
+    },
+    {
+      "id": "690a395741f94232862db4699ce7d8b3",
+      "type": "capture",
+      "x": 660,
+      "y": 155,
+      "params": {
+        "output": "${RUNDIR}/图片/capture"
+      }
+    },
+    {
+      "id": "dc78f060782944918eba6953b7a42bf8",
+      "type": "capture",
+      "x": 220,
+      "y": 155,
+      "params": {
+        "output": "${RUNDIR}/图片/capture"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "e9ff9295db37438887e5a11918f42f73",
+      "to": "e58bd41eb1014f5fbae496f2b3b932c9"
+    },
+    {
+      "from": "e58bd41eb1014f5fbae496f2b3b932c9",
+      "to": "3a7c9ede09c947019d26dae1dd53ee20"
+    },
+    {
+      "from": "3a7c9ede09c947019d26dae1dd53ee20",
+      "to": "2f653f84caaf4887af759d2bfe69ddad"
+    },
+    {
+      "from": "2f653f84caaf4887af759d2bfe69ddad",
+      "to": "f7909c2ccee445a4852ae7a6603f4cf1"
+    },
+    {
+      "from": "b027ce4c48e04d7eacf16ba9504ee716",
+      "to": "7ef9008f49634178897fbe0166d27155"
+    },
+    {
+      "from": "7ef9008f49634178897fbe0166d27155",
+      "to": "e9ff9295db37438887e5a11918f42f73"
+    },
+    {
+      "from": "e077ecd3923d4ff096ad8fdaa88b25d0",
+      "to": "2893bed139ac40f6a0ced722198813cf"
+    },
+    {
+      "from": "2893bed139ac40f6a0ced722198813cf",
+      "to": "e25b34948cfc4f418ea2dfc004b2cde2"
+    },
+    {
+      "from": "e25b34948cfc4f418ea2dfc004b2cde2",
+      "to": "1508f23dd44040f7a03fe78a4c7bf484"
+    },
+    {
+      "from": "1508f23dd44040f7a03fe78a4c7bf484",
+      "to": "abb0c0b3fa4a48beb6b5cce68469ee5b"
+    },
+    {
+      "from": "d5e4f6e8ce3b49e985da044e5348dc95",
+      "to": "690a395741f94232862db4699ce7d8b3"
+    },
+    {
+      "from": "690a395741f94232862db4699ce7d8b3",
+      "to": "b027ce4c48e04d7eacf16ba9504ee716"
+    },
+    {
+      "from": "abb0c0b3fa4a48beb6b5cce68469ee5b",
+      "to": "dc78f060782944918eba6953b7a42bf8"
+    },
+    {
+      "from": "dc78f060782944918eba6953b7a42bf8",
+      "to": "d5e4f6e8ce3b49e985da044e5348dc95"
+    }
+  ]
+}

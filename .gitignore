@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+sdk/
+项目/
+运行记录/
+build/
+dist/
+*.spec
