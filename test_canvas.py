@@ -120,6 +120,81 @@ class CanvasTests(unittest.TestCase):
    self.assertNotEqual(*dirs)
    for d in dirs:self.assertTrue((d/'日志'/'执行记录.txt').is_file());self.assertTrue((d/'日志'/'底层完整日志.log').is_file());self.assertTrue((d/'配置'/'执行快照.json').is_file())
   finally:app.subprocess.Popen=old
+ def test_repeat_runs_and_persists_each_round(self):
+  import time
+  from run_history import list_runs
+  w=self.w;w.add('wait',10,10);w.repeat_var.set('3');calls=[]
+  class FakeProcess:
+   def __init__(self,args,**kw):calls.append(args);self.stdout=iter([])
+   def wait(self):return 2 if len(calls)==1 else 0
+  old=app.subprocess.Popen;app.subprocess.Popen=FakeProcess
+  try:
+   w.run_real();deadline=time.monotonic()+5
+   while w.batch and time.monotonic()<deadline:w.update();time.sleep(.02)
+  finally:app.subprocess.Popen=old
+  self.assertIsNone(w.batch);self.assertEqual(len(calls),3);self.assertEqual(load_case(w.case)['repeat_count'],3)
+  runs=list_runs(w.case);self.assertEqual(len(runs),3);self.assertEqual({r['repeat_index'] for r in runs},{1,2,3});self.assertEqual(len({r['batch_id'] for r in runs}),1);self.assertIn('1 轮失败',w.status.cget('text'))
+ def test_repeat_stops_on_fatal_and_canvas_has_no_hover_binding(self):
+  import time
+  w=self.w;w.add('wait',10,10);w.repeat_var.set('3');calls=[]
+  class FakeProcess:
+   def __init__(self,args,**kw):calls.append(args);self.stdout=iter([])
+   def wait(self):return 1
+  old=app.subprocess.Popen;app.subprocess.Popen=FakeProcess
+  try:
+   w.run_real();deadline=time.monotonic()+3
+   while w.batch and time.monotonic()<deadline:w.update();time.sleep(.02)
+  finally:app.subprocess.Popen=old
+  self.assertEqual(len(calls),1);self.assertIn('关键步骤中断',w.status.cget('text'));self.assertFalse(w.canvas.bind('<Motion>'))
+ def test_batch_history_groups_rounds_and_replays_selected_round(self):
+  import time
+  w=self.w;w.add('wait',10,10);w.repeat_var.set('3');calls=[]
+  class FakeProcess:
+   def __init__(self,args,**kw):calls.append(args);self.stdout=iter([])
+   def wait(self):return 2 if len(calls)==2 else 0
+  old=app.subprocess.Popen;app.subprocess.Popen=FakeProcess
+  try:
+   w.run_real();deadline=time.monotonic()+5
+   while w.batch and time.monotonic()<deadline:w.update();time.sleep(.02)
+  finally:app.subprocess.Popen=old
+  w.refresh_history();roots=w.history_tree.get_children();self.assertEqual(len(roots),1)
+  root=roots[0];children=w.history_tree.get_children(root);self.assertEqual(len(children),3)
+  self.assertIn('通过 2',w.history_tree.item(root,'values')[1]);self.assertIn('失败 1',w.history_tree.item(root,'values')[1])
+  self.assertIn('第 2 / 3 轮',w.history_tree.item(children[1],'text'));self.assertEqual(w.history_tree.item(children[1],'values')[1],'有失败')
+  w.history_tree.selection_set(children[1]);w.on_history_selected();w.update();self.assertEqual(w.history_items[children[1]]['repeat_index'],2);self.assertIn('有失败',w.run_status.cget('text'))
+ def test_history_mixed_timestamps_and_return_navigation(self):
+  from run_history import list_batches
+  w=self.w;w.add('wait',10,10);w.persist();base=w.case.parent/'测试结果'/w.case.name.removesuffix('.case.json')
+  for name,summary in [('20261116-033124-aaa',{}),('20261116-173658-bbb',{'started_at':'2026-11-16T17:36:58.054129','status':'通过','batch_id':'batchnew','repeat_index':1,'repeat_total':2}),('20261116-173700-ccc',{'started_at':'2026-11-16T17:37:00.054129','status':'有失败','batch_id':'batchnew','repeat_index':2,'repeat_total':2})]:
+   d=base/name;(d/'配置').mkdir(parents=True);(d/'日志').mkdir();(d/'配置'/'执行快照.json').write_bytes(w.case.read_bytes())
+   (d/'运行摘要.json').write_text(json.dumps(summary),encoding='utf8')
+  batches=list_batches(w.case);self.assertEqual(batches[0]['id'],'batchnew')
+  w.refresh_history();w.update();root=w.history_tree.get_children()[0];self.assertTrue(w.history_tree.item(root,'open'));children=w.history_tree.get_children(root);target=children[1]
+  w.history_tree.selection_set(target);w.update();self.assertEqual(str(w.tabs.select()),str(w.overview_tab));self.assertTrue(w.history_back.winfo_ismapped())
+  w.return_to_history();w.update();self.assertEqual(str(w.tabs.select()),str(w.history_tab));self.assertEqual(w.history_tree.selection(),(target,));self.assertTrue(w.history_tree.item(root,'open'))
+  w.refresh_history();w.update();self.assertEqual(w.history_tree.selection(),(target,));self.assertEqual(str(w.tabs.select()),str(w.history_tab))
+ def test_history_single_click_toggles_whole_batch_row(self):
+  w=self.w;w.add('wait',10,10);w.persist();d=w.case.parent/'测试结果'/w.case.name.removesuffix('.case.json')/'20261116-173658-abc';(d/'配置').mkdir(parents=True);(d/'日志').mkdir();(d/'配置'/'执行快照.json').write_bytes(w.case.read_bytes());(d/'运行摘要.json').write_text(json.dumps({'status':'通过','batch_id':'abc','repeat_index':1,'repeat_total':1}),encoding='utf8')
+  w.refresh_history();w.tabs.select(w.history_tab);w.update();tree=w.history_tree;root=tree.get_children()[0]
+  tree.item(root,open=False);w.update();x,y,width,height=tree.bbox(root)
+  import types
+  for offset in (8,50,200,350):
+   event=types.SimpleNamespace(x=x+offset,y=y+height//2)
+   self.assertEqual(w.history_click(event),'break');self.assertTrue(tree.item(root,'open'))
+   self.assertEqual(w.history_click(event),'break');self.assertFalse(tree.item(root,'open'))
+  tree.item(root,open=True);w.update();child=tree.get_children(root)[0];tree.selection_set(child);w.on_history_selected();w.update();self.assertTrue(w.history_nav.winfo_ismapped());self.assertGreater(w.history_nav.winfo_rooty(),w.run_status.winfo_rooty())
+  w.return_to_history();w.update();self.assertFalse(w.history_nav.winfo_ismapped());self.assertEqual(tree.selection(),(child,))
+  w.on_history_selected();w.update();self.assertTrue(w.history_nav.winfo_ismapped())
+ def test_mouse_wheel_scrolls_log_when_pointer_is_over_image(self):
+  from PIL import Image
+  w=self.w;image=w.project/'wheel.png';Image.new('RGB',(100,80),'blue').save(image)
+  w.tabs.select(1);w.update()
+  for i in range(80):w.log_append('日志内容 '+str(i))
+  w.add_log_preview(str(image))
+  for i in range(80):w.log_append('更多内容 '+str(i))
+  w.update();w.log.yview_moveto(.4);w.update();before=w.log.yview()[0]
+  preview=w.log_windows[-1][2];preview.event_generate('<MouseWheel>',delta=-120,x=10,y=10);w.update()
+  self.assertGreater(w.log.yview()[0],before)
  def test_fractional_wait_new_and_legacy_nodes(self):
   import hardware_runner as runner
   w=self.w;w.add('wait',20,20);w.param_vars['seconds'].set('0.07');self.assertTrue(w.apply());self.assertTrue(w.save());self.assertEqual(load_case(w.case)['nodes'][0]['params']['seconds'],0.07)
@@ -182,7 +257,7 @@ class CanvasTests(unittest.TestCase):
    w.render_event({'event':'step_done','index':i,'type':'capture','elapsed':.2,'message':'ok','artifacts':{'preview':str(img)}})
   w.update();self.assertFalse(w.steps.rows['1']['expanded']);self.assertFalse(w.steps.rows['2']['expanded']);self.assertEqual(len(w.log_windows),2)
   w.steps.toggle_image('1');w.update();self.assertTrue(w.steps.rows['1']['expanded']);self.assertIsNotNone(w.steps.rows['1']['photo']);self.assertFalse(w.steps.rows['2']['expanded'])
-  w.steps.toggle_image('1');self.assertFalse(w.steps.rows['1']['expanded']);w.log_windows[1][1].invoke();w.update();self.assertTrue(w.log_windows[1][3]['expanded']);w.log_windows[1][1].invoke();self.assertFalse(w.log_windows[1][3]['expanded'])
+  w.steps.toggle_image('1');self.assertFalse(w.steps.rows['1']['expanded']);self.assertTrue(w.log_windows[1][3]['expanded']);self.assertIsNotNone(w.log_windows[1][3]['photo'])
   opened=[];old=w.show_large_image;w.show_large_image=lambda p:opened.append(str(p))
   try:w.open_step_preview('1');w.open_step_preview('2')
   finally:w.show_large_image=old
@@ -313,18 +388,28 @@ class CanvasTests(unittest.TestCase):
   finally:app.subprocess.Popen=old
   self.assertIsNone(w.process);self.assertIn('有失败',w.run_status.cget('text'));self.assertEqual(w.steps.item('1','values')[2],'失败');self.assertEqual(w.steps.item('2','values')[2],'完成')
   runs=list_runs(w.case);self.assertEqual(runs[0]['status'],'有失败');self.assertEqual(runs[0]['failed'],1);self.assertEqual(len(runs[0]['events']),4)
-  w.nodes[0]['params']['seconds']=9;w.selected=None;w.persist();w.refresh_history();w.history_tree.selection_set('0');w.on_history_selected();w.update()
+  w.nodes[0]['params']['seconds']=9;w.selected=None;w.persist();w.refresh_history();w.history_tree.selection_set(w.history_tree.get_children(w.history_tree.get_children()[0])[0]);w.on_history_selected();w.update()
   self.assertEqual(w.nodes[0]['params']['seconds'],9);self.assertEqual(w.steps.item('1','values')[2],'失败');self.assertEqual(w.steps.item('2','values')[2],'完成');self.assertIn('历史',w.run_status.cget('text'))
  def test_old_raw_log_history_is_readable(self):
   from run_history import inspect_run
   p=pathlib.Path('dist/设备测试画布/项目/test1/测试结果/Case 001/20261116-033124-258c27')
   if not p.exists():self.skipTest('old run unavailable')
   result=inspect_run(p);self.assertEqual(result['status'],'失败');self.assertGreater(len(result['events']),0);self.assertTrue(any(e['event']=='step_error' for e in result['events']))
- def test_image_enlarges_inside_application(self):
+ def test_image_opens_with_windows_default_viewer(self):
   from PIL import Image
-  w=self.w;image=w.project/'large.png';Image.new('RGB',(80,50),'red').save(image);w.show_large_image(image);w.update()
-  windows=[x for x in w.winfo_children() if isinstance(x,app.tk.Toplevel)];self.assertTrue(windows);self.assertIn('抓图查看',windows[-1].title())
-  label=next(x for x in windows[-1].winfo_children() if isinstance(x,app.tk.Label));self.assertTrue(hasattr(label,'photo'));windows[-1].destroy()
+  w=self.w;image=w.project/'large.png';Image.new('RGB',(80,50),'red').save(image);opened=[];old=app.os.startfile;app.os.startfile=lambda path:opened.append(path)
+  try:w.show_large_image(image)
+  finally:app.os.startfile=old
+  self.assertEqual(opened,[str(image)])
+ def test_long_result_expands_and_detailed_log_shows_image(self):
+  from PIL import Image
+  w=self.w;message='I²C 断言失败：实际 0x296F1B，期望 0x333300，掩码 0xFFFFFFFF'
+  w.steps.insert('', 'end', iid='1',values=('1','I²C 读 / 断言','失败',message),tags=('error',));row=w.steps.rows['1'];w.update()
+  self.assertIsNotNone(row['detail_toggle']);self.assertFalse(row['detail_expanded']);self.assertEqual(w.steps.item('1','values')[3],message)
+  row['detail_toggle'].invoke();w.update();self.assertTrue(row['detail_expanded']);self.assertEqual(row['detail'].cget('text'),message)
+  row['detail_toggle'].invoke();self.assertFalse(row['detail_expanded'])
+  image=w.project/'inline.png';Image.new('RGB',(80,50),'blue').save(image);w.add_log_preview(str(image));w.update();container,button,preview,state=w.log_windows[-1]
+  self.assertTrue(state['expanded']);self.assertIsNotNone(state['photo']);self.assertTrue(preview.winfo_manager());self.assertIsNone(button)
  def test_hover_event_shows_and_hides_capture_popover(self):
   from PIL import Image
   import time,types
@@ -342,7 +427,7 @@ class CanvasTests(unittest.TestCase):
   if not source.exists():self.skipTest('old run unavailable')
   w=self.w;w.add('wait',20,20);w.param_vars['seconds'].set('0.07');w.apply();w.persist();before=w.case.read_bytes()
   dest=w.case.parent/'测试结果'/w.case.name.removesuffix('.case.json')/source.name;dest.parent.mkdir(parents=True);shutil.copytree(source,dest)
-  w.refresh_history();self.assertEqual(len(w.history_tree.get_children()),1);w.history_tree.selection_set('0');w.on_history_selected();w.update()
+  w.refresh_history();self.assertEqual(len(w.history_tree.get_children()),1);w.history_tree.selection_set(w.history_tree.get_children(w.history_tree.get_children()[0])[0]);w.on_history_selected();w.update()
   self.assertEqual(w.case.read_bytes(),before);self.assertEqual(w.nodes[0]['params']['seconds'],0.07);self.assertEqual(w.steps.item('9','values')[2],'失败');self.assertEqual(w.steps.item('10','values')[2],'未执行');self.assertIn('历史',w.run_status.cget('text'))
  def test_historical_capture_is_available_for_canvas_hover(self):
   from PIL import Image
@@ -350,7 +435,7 @@ class CanvasTests(unittest.TestCase):
   run=w.project/'测试结果'/w.case.name.removesuffix('.case.json')/'20261116-010101-abc';(run/'配置').mkdir(parents=True);(run/'日志').mkdir()
   (run/'配置'/'执行快照.json').write_bytes(w.case.read_bytes());events=[{'event':'step_start','index':1,'total':1,'type':'capture','params':{'output':'x'}},{'event':'step_done','index':1,'type':'capture','elapsed':.1,'message':'ok','artifacts':{'preview':str(image)}}]
   (run/'日志'/'步骤事件.jsonl').write_text(''.join(json.dumps(e,ensure_ascii=False)+'\n' for e in events),encoding='utf8');(run/'运行摘要.json').write_text(json.dumps({'status':'通过','exit_code':0,'failed_count':0}),encoding='utf8')
-  w.refresh_history();w.history_tree.selection_set('0');w.on_history_selected();w.update();self.assertEqual(w.node_artifacts[nodeid],str(image));self.assertEqual(w.preview_case_path,w.case);self.assertIsNone(w.run_case_path)
+  w.refresh_history();w.history_tree.selection_set(w.history_tree.get_children(w.history_tree.get_children()[0])[0]);w.on_history_selected();w.update();self.assertEqual(w.node_artifacts[nodeid],str(image));self.assertEqual(w.preview_case_path,w.case);self.assertIsNone(w.run_case_path)
   w.hover_key=nodeid;w.show_hover(nodeid,100,100);w.update();self.assertIsNotNone(w.hover_window);w.hide_hover()
  def test_user_case_runs_in_order_with_mock_hardware(self):
   import hardware_runner as runner

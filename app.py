@@ -1,7 +1,7 @@
 import json, math, os, pathlib, re, tkinter as tk
 import queue, subprocess, sys, threading, uuid, datetime, copy
 from case_model import load_case, execution_order, resolve_paths, validate_steps, layout_order
-from run_history import list_runs
+from run_history import list_batches
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk
 
@@ -33,15 +33,25 @@ class StepList(ttk.Frame):
         bar.pack(side='right',fill='y');self.canvas.pack(side='left',fill='both',expand=True)
         self.inner=tk.Frame(self.canvas,bg='#ffffff');self.window=self.canvas.create_window(0,0,window=self.inner,anchor='nw')
         self.inner.bind('<Configure>',lambda e:self.canvas.configure(scrollregion=self.canvas.bbox('all')))
-        self.canvas.bind('<Configure>',lambda e:self.canvas.itemconfigure(self.window,width=e.width))
+        self.canvas.bind('<Configure>',self.resize_rows)
         self.canvas.bind('<MouseWheel>',lambda e:self.scroll(e))
+    def resize_rows(self,event):
+        self.canvas.itemconfigure(self.window,width=event.width)
+        for row in self.rows.values():self.wrap_row(row)
+    def wrap_row(self,row):
+        available=max(90,self.canvas.winfo_width()-285-(80 if row.get('toggle') else 0))
+        row['labels'][3].configure(wraplength=available,justify='left')
+        if row.get('detail'):row['detail'].configure(wraplength=max(120,self.canvas.winfo_width()-36))
     def scroll(self,event):self.canvas.yview_scroll(-int(event.delta/120),'units');return 'break'
     def get_children(self):return tuple(self.order)
     def exists(self,iid):return iid in self.rows
     def selection(self):return (self.selected,) if self.selected else ()
     def choose(self,iid):
         self.selected=iid;self.event_generate('<<TreeviewSelect>>')
-        if iid in self.rows and self.rows[iid].get('path'):self.toggle_image(iid)
+        if iid in self.rows:
+            row=self.rows[iid]
+            if row.get('path'):self.toggle_image(iid)
+            elif row.get('detail_toggle'):self.toggle_detail(iid)
     def insert(self,parent,index,iid,values,tags=()):
         card=tk.Frame(self.inner,bg='#ffffff',highlightthickness=1,highlightbackground='#e6ebf2');card.pack(fill='x',padx=5,pady=(4,0))
         head=tk.Frame(card,bg='#ffffff');head.pack(fill='x',padx=8,pady=5);head.columnconfigure(3,weight=1)
@@ -49,27 +59,49 @@ class StepList(ttk.Frame):
         for col,(value,width) in enumerate(zip(values,(3,16,6,1))):
             label=tk.Label(head,text=str(value),bg='#ffffff',fg='#304057',anchor='w',font=('Microsoft YaHei UI',9),width=width if col!=3 else 1)
             label.grid(row=0,column=col,sticky='ew',padx=(0,6));labels.append(label)
-        self.rows[iid]={'card':card,'head':head,'labels':labels,'values':tuple(values),'thumbnail':None,'photo':None,'toggle':None,'path':None,'expanded':False,'callback':None};self.order.append(iid)
+        self.rows[iid]={'card':card,'head':head,'labels':labels,'values':tuple(values),'thumbnail':None,'photo':None,'toggle':None,'path':None,'expanded':False,'callback':None,'detail':None,'detail_toggle':None,'detail_expanded':False};self.order.append(iid)
         for widget in (card,head,*labels):
             widget.bind('<Button-1>',lambda e,k=iid:self.choose(k));widget.bind('<MouseWheel>',self.scroll)
-        self.item(iid,values=values,tags=tags);return iid
+        self.wrap_row(self.rows[iid]);self.item(iid,values=values,tags=tags);return iid
     def item(self,iid,option=None,**kw):
         row=self.rows[iid]
         if 'values' in kw:
             row['values']=tuple(str(x) for x in kw['values'])
-            for label,value in zip(row['labels'],row['values']):label.configure(text=value)
+            for label,value in zip(row['labels'][:3],row['values'][:3]):label.configure(text=value)
+            message=row['values'][3] if len(row['values'])>3 else ''
+            long=len(message)>24 or '\n' in message
+            row['labels'][3].configure(text=(message[:16]+'…') if long else message)
+            if long:
+                if row['detail_toggle'] is None:
+                    row['detail_toggle']=tk.Button(row['head'],text='展开详情 ▾',bg='#ffffff',fg='#2457a5',activebackground='#edf4ff',relief='flat',bd=0,cursor='hand2',font=('Microsoft YaHei UI',9),command=lambda k=iid:self.toggle_detail(k))
+                    row['detail_toggle'].grid(row=0,column=4,sticky='e',padx=(3,0))
+                if row['detail'] is None:
+                    row['detail']=tk.Label(row['card'],bg='#f5f7fb',fg='#304057',anchor='w',justify='left',font=('Microsoft YaHei UI',9),padx=8,pady=6)
+                    row['detail'].bind('<MouseWheel>',self.scroll)
+                row['detail'].configure(text=message);self.wrap_row(row)
+            else:
+                if row['detail_toggle']:row['detail_toggle'].destroy();row['detail_toggle']=None
+                if row['detail']:row['detail'].pack_forget();row['detail_expanded']=False
         if 'tags' in kw:
             tags=kw['tags'];color='#168052' if 'ok' in tags else '#c33838' if 'error' in tags else '#a86508' if 'running' in tags else '#667991'
             row['labels'][2].configure(fg=color)
         if option=='values':return row['values']
         return {'values':row['values']}
+    def toggle_detail(self,iid):
+        row=self.rows.get(iid)
+        if not row or not row['detail_toggle']:return
+        if row['detail_expanded']:
+            row['detail'].pack_forget();row['detail_expanded']=False;row['detail_toggle'].configure(text='展开详情 ▾')
+        else:
+            row['detail'].pack(fill='x',padx=8,pady=(0,7));row['detail_expanded']=True;row['detail_toggle'].configure(text='收起详情 ▴')
+        self.update_idletasks();self.canvas.configure(scrollregion=self.canvas.bbox('all'))
     def attach_image(self,iid,path,callback):
         if iid not in self.rows:return False
         row=self.rows[iid];row['path']=path;row['callback']=callback
         for widget in (row['card'],row['head'],*row['labels']):widget.configure(cursor='hand2')
         if row['toggle'] is None:
             row['toggle']=tk.Button(row['head'],text='展开图片 ▾',bg='#ffffff',fg='#2457a5',activebackground='#edf4ff',relief='flat',bd=0,cursor='hand2',font=('Microsoft YaHei UI',9),command=lambda k=iid:self.toggle_image(k))
-            row['toggle'].grid(row=0,column=4,sticky='e',padx=(3,0))
+            row['toggle'].grid(row=0,column=4,sticky='e',padx=(3,0));self.wrap_row(row)
         return True
     def toggle_image(self,iid):
         if iid not in self.rows:return
@@ -101,7 +133,7 @@ class StepList(ttk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__(); self.title('自动化测试工作台'); self.geometry('1600x900'); self.configure(bg='#f3f5f9')
-        self.project = ROOT / '项目'; self.project.mkdir(parents=True,exist_ok=True); self.folder = self.project; self.case = None; self.nodes = []; self.edges = []; self.linking = None; self.selected = None; self.selected_edge = None; self.node_clipboard = None; self.case_clipboard = None; self.step_rows = {}; self.step_artifacts = {}; self.log_images = []; self.log_windows = []; self.run_node_ids = {}; self.node_status = {}; self.node_results = {}; self.node_artifacts = {}; self.preview_case_path = None; self.hover_window = None; self.hover_photo = None; self.hover_key = None; self.hover_timer = None; self.hide_timer = None; self.run_case_path = None; self.preview_image = None; self.preview_path = None; self.preview_source = None; self.simulating = False; self.zoom = 1.0; self.drag = None; self.process = None; self.runlog = None; self.readable_log = None; self.current_run_dir = None; self.last_image_dir = None; self.last_preview = None; self.step_failed = False; self.run_failures = []; self.event_file = None; self.run_summary = None; self.history_items = {}; self.history_snapshot_path = None; self.replaying = False; self.messages = queue.Queue(); self.protocol('WM_DELETE_WINDOW',self.close_window);self.bind('<Destroy>',self.cleanup_hover,add='+')
+        self._history_refreshing=False;self.batch=None;self.repeat_var=tk.StringVar(value='1');self.repeat_count=1;self.project = ROOT / '项目'; self.project.mkdir(parents=True,exist_ok=True); self.folder = self.project; self.case = None; self.nodes = []; self.edges = []; self.linking = None; self.selected = None; self.selected_edge = None; self.node_clipboard = None; self.case_clipboard = None; self.step_rows = {}; self.step_artifacts = {}; self.log_images = []; self.log_windows = []; self.run_node_ids = {}; self.node_status = {}; self.node_results = {}; self.node_artifacts = {}; self.preview_case_path = None; self.hover_window = None; self.hover_photo = None; self.hover_key = None; self.hover_timer = None; self.hide_timer = None; self.run_case_path = None; self.preview_image = None; self.preview_path = None; self.preview_source = None; self.simulating = False; self.zoom = 1.0; self.drag = None; self.process = None; self.runlog = None; self.readable_log = None; self.current_run_dir = None; self.last_image_dir = None; self.last_preview = None; self.step_failed = False; self.run_failures = []; self.event_file = None; self.run_summary = None; self.history_items = {}; self.history_snapshot_path = None; self.replaying = False; self.messages = queue.Queue(); self.protocol('WM_DELETE_WINDOW',self.close_window);self.bind('<Destroy>',self.cleanup_hover,add='+')
         style=ttk.Style(self); style.theme_use('clam')
         style.configure('.', background='#f3f5f9', foreground='#26354c', fieldbackground='#ffffff',font=('Microsoft YaHei UI',9))
         style.configure('TButton', padding=(10,6),background='#ffffff',foreground='#34435b',bordercolor='#d7dfeb',lightcolor='#ffffff',darkcolor='#e4e9f0');style.map('TButton',background=[('active','#eaf1fd')])
@@ -114,6 +146,7 @@ class App(tk.Tk):
         for label,command in [('新建项目',self.new_project),('打开项目',self.open_project),('新建 Case',self.new_case),('保存',self.save),('校验',self.validate),('模拟运行',self.simulate),('真实运行',self.run_real)]:
             ttk.Button(top,text=label,command=command,style='Primary.TButton' if label=='真实运行' else 'TButton').pack(side='left',padx=3,pady=6)
         ttk.Label(top,text='默认  COM3 / CHANNEL 0',foreground='#4c6b92').pack(side='right',padx=14)
+        ttk.Label(top,text='重复次数').pack(side='left',padx=(10,2));self.repeat_entry=ttk.Spinbox(top,from_=1,to=10000,width=5,textvariable=self.repeat_var);self.repeat_entry.pack(side='left');self.repeat_entry.bind('<FocusOut>',self.repeat_changed)
         body=ttk.Panedwindow(self,orient='horizontal'); body.pack(fill='both',expand=True)
         left=ttk.Frame(body,width=220); body.add(left,weight=1)
         ttk.Label(left,text='项目与 CASE',font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w',padx=12,pady=(14,8))
@@ -129,7 +162,7 @@ class App(tk.Tk):
         canvas_frame=ttk.Frame(middle); canvas_frame.pack(fill='both',expand=True)
         self.canvas=tk.Canvas(canvas_frame,bg='#f5f7fb',highlightthickness=0,scrollregion=(-10000,-10000,10000,10000)); self.canvas.grid(row=0,column=0,sticky='nsew')
         canvas_frame.rowconfigure(0,weight=1); canvas_frame.columnconfigure(0,weight=1)
-        self.bind('<Control-s>',lambda e:self.save()); self.canvas.bind('<Delete>',lambda e:self.delete_selection()); self.canvas.bind('<BackSpace>',lambda e:self.delete_selection()); self.canvas.bind('<Control-c>',lambda e:self.copy_node()); self.canvas.bind('<Control-v>',lambda e:self.paste_node()); self.canvas.bind('<Control-d>',lambda e:self.duplicate_node()); self.canvas.bind('<MouseWheel>',self.zoom_canvas); self.canvas.bind('<Motion>',self.canvas_hover); self.canvas.bind('<Leave>',lambda e:self.schedule_hover_hide()); self.canvas.bind('<Button-1>',self.click); self.canvas.bind('<B1-Motion>',self.move); self.canvas.bind('<ButtonRelease-1>',self.release); self.canvas.bind('<Button-3>',self.context_menu); self.canvas.xview_moveto(.5); self.canvas.yview_moveto(.5)
+        self.bind('<Control-s>',lambda e:self.save()); self.canvas.bind('<Delete>',lambda e:self.delete_selection()); self.canvas.bind('<BackSpace>',lambda e:self.delete_selection()); self.canvas.bind('<Control-c>',lambda e:self.copy_node()); self.canvas.bind('<Control-v>',lambda e:self.paste_node()); self.canvas.bind('<Control-d>',lambda e:self.duplicate_node()); self.canvas.bind('<MouseWheel>',self.zoom_canvas); self.canvas.bind('<Button-1>',self.click); self.canvas.bind('<B1-Motion>',self.move); self.canvas.bind('<ButtonRelease-1>',self.release); self.canvas.bind('<Button-3>',self.context_menu); self.canvas.xview_moveto(.5); self.canvas.yview_moveto(.5)
         bottom=ttk.Frame(middle); bottom.pack(fill='x'); ttk.Label(bottom,text='左键拖动  ·  滚轮缩放  ·  圆点连线  ·  Ctrl+C / V  ·  右键菜单').pack(side='right',padx=8); self.status=ttk.Label(bottom,text='先打开一个项目目录，再新建 Case。'); self.status.pack(anchor='w',padx=10,pady=8)
         right=ttk.Frame(body,width=440); body.add(right,weight=3)
         ttk.Label(right,text='节点配置',font=('Microsoft YaHei UI',10,'bold')).pack(anchor='w',padx=12,pady=(14,8))
@@ -143,16 +176,18 @@ class App(tk.Tk):
         actions=ttk.Frame(right);actions.pack(fill='x',padx=8,pady=(0,5))
         for label,command in [('结果目录',self.open_run_dir),('图片目录',self.open_image_dir),('查看原图',self.open_preview),('完整日志',self.open_raw_log)]:
             ttk.Button(actions,text=label,command=command).pack(side='left',padx=(0,3))
+        self.history_nav=ttk.Frame(right);self.history_back=ttk.Button(self.history_nav,text='← 返回执行记录',command=self.return_to_history);self.history_back.pack(side='left');ttk.Label(self.history_nav,text='正在查看历史结果',foreground='#65758d').pack(side='left',padx=10)
         tabs=ttk.Notebook(right);tabs.pack(fill='both',expand=True,padx=8,pady=(0,5));self.tabs=tabs
         overview=ttk.Frame(tabs);detail=ttk.Frame(tabs);history=ttk.Frame(tabs);self.overview_tab=overview
-        tabs.add(overview,text='流程总览');tabs.add(detail,text='详细日志');tabs.add(history,text='执行记录')
+        tabs.add(overview,text='流程总览');tabs.add(detail,text='详细日志');tabs.add(history,text='执行记录');self.history_tab=history
         controls=ttk.Frame(history);controls.pack(fill='x',padx=4,pady=4)
-        ttk.Label(controls,text='选择记录查看当时结果，当前 Case 参数不变',foreground='#65758d').pack(side='left')
+        ttk.Label(controls,text='最新在前 · 展开批次选择轮次',foreground='#65758d').pack(side='left')
         ttk.Button(controls,text='查看参数快照',command=lambda:self.open_path(self.history_snapshot_path)).pack(side='right')
-        self.history_tree=ttk.Treeview(history,columns=('time','status','failed'),show='headings',selectmode='browse')
-        for col,title,width in [('time','执行时间',210),('status','结果',100),('failed','失败数',65)]:self.history_tree.heading(col,text=title);self.history_tree.column(col,width=width,anchor='w')
+        self.history_tree=ttk.Treeview(history,columns=('time','status'),show='tree headings',selectmode='browse')
+        self.history_tree.heading('#0',text='批次 / 轮次');self.history_tree.column('#0',width=140,minwidth=110,stretch=False)
+        for col,title,width in [('time','启动时间',145),('status','执行结果',190)]:self.history_tree.heading(col,text=title);self.history_tree.column(col,width=width,anchor='w')
         history_bar=ttk.Scrollbar(history,orient='vertical',command=self.history_tree.yview);self.history_tree.configure(yscrollcommand=history_bar.set);history_bar.pack(side='right',fill='y');self.history_tree.pack(fill='both',expand=True)
-        self.history_tree.bind('<<TreeviewSelect>>',self.on_history_selected);tabs.bind('<<NotebookTabChanged>>',self.on_tab_change)
+        self.history_tree.bind('<<TreeviewSelect>>',self.on_history_selected);self.history_tree.bind('<Button-1>',self.history_click);self.history_tree.bind('<Double-Button-1>',self.history_click);tabs.bind('<<NotebookTabChanged>>',self.on_tab_change)
         self.steps=StepList(overview);self.steps.pack(fill='both',expand=True);self.steps.bind('<<TreeviewSelect>>',self.select_step)
         self.log=tk.Text(detail,width=45,height=12,bg='#ffffff',fg='#26354c',insertbackground='#26354c',state='disabled',wrap='word',font=('Microsoft YaHei UI',9),spacing1=1,spacing3=1,relief='flat',padx=10,pady=8)
         scrollbar=ttk.Scrollbar(detail,orient='vertical',command=self.log.yview);self.log.configure(yscrollcommand=scrollbar.set);scrollbar.pack(side='right',fill='y');self.log.pack(side='left',fill='both',expand=True)
@@ -161,20 +196,52 @@ class App(tk.Tk):
         self.log.tag_configure('value',foreground='#9a5b05',font=('Microsoft YaHei UI',9,'bold'));self.log.tag_configure('muted',foreground='#728097');self.log.tag_configure('path',foreground='#2457a5')
         self.refresh();self.draw();self.say('项目目录：'+str(self.project))
     def on_tab_change(self,event=None):
-        if self.tabs.tab(self.tabs.select(),'text')=='执行记录':self.refresh_history()
+        self.update_history_navigation()
+    def update_history_navigation(self):
+        if self.history_snapshot_path and self.tabs.select()!=str(self.history_tab):
+            self.history_nav.pack(fill='x',padx=8,pady=(0,5),before=self.tabs)
+        else:self.history_nav.pack_forget()
+    def history_click(self,event):
+        tree=self.history_tree;item=tree.identify_row(event.y)
+        if not item:return
+        if not tree.parent(item):
+            tree.selection_set(item);tree.focus(item);tree.item(item,open=not tree.item(item,'open'));return 'break'
+        if tree.selection()==(item,):
+            self.on_history_selected();return 'break'
+    def return_to_history(self):
+        self.tabs.select(self.history_tab)
+        selected=self.history_tree.selection()
+        if selected:self.history_tree.see(selected[0])
     def refresh_history(self):
         if not hasattr(self,'history_tree'):return
-        self.history_tree.delete(*self.history_tree.get_children());self.history_items={}
-        if not self.case:return
-        try:runs=list_runs(self.case)
-        except OSError as e:self.say('读取执行记录失败：'+str(e));return
-        for i,run in enumerate(runs):
-            key=str(i);self.history_items[key]=run;name=run['directory'].name
-            
-            try:timestamp=datetime.datetime.strptime(name[:15],'%Y%m%d-%H%M%S').strftime('%Y-%m-%d %H:%M:%S')
+        old_roots=self.history_tree.get_children();expanded={item for item in old_roots if self.history_tree.item(item,'open')}
+        selected=self.history_tree.selection();position=self.history_tree.yview()[0]
+        self._history_refreshing=True
+        self.history_tree.delete(*old_roots);self.history_items={}
+        if not self.case:self._history_refreshing=False;return
+        try:batches=list_batches(self.case)
+        except OSError as e:self._history_refreshing=False;self.say('读取执行记录失败：'+str(e));return
+        for batch_number,batch in enumerate(batches):
+            first=batch['runs'][0];name=first['directory'].name
+            try:timestamp=datetime.datetime.strptime(name[:15],'%Y%m%d-%H%M%S').strftime('%m-%d %H:%M:%S')
             except ValueError:timestamp=name
-            self.history_tree.insert('','end',iid=key,values=(timestamp,run['status'],str(run['failed'])))
+            key='batch:'+batch['id'];parts=[f"通过 {batch['passed']}",f"失败 {batch['failed']}"]
+            if batch['unknown']:
+                active=self.batch and self.batch['id']==batch['id'] and self.process
+                parts.append(f"{'运行中' if active else '未结束'} {batch['unknown']}")
+            if batch['not_run']:parts.append(f"未执行 {batch['not_run']}")
+            self.history_tree.insert('','end',iid=key,text=f"执行批次 · {batch['total']} 轮",values=(timestamp,'  '.join(parts)),open=key in expanded or (not old_roots and batch_number==0))
+            for run in batch['runs']:
+                child='run:'+str(run['directory']);self.history_items[child]=run
+                round_status='运行中' if run['status']=='未结束' and self.batch and self.batch['id']==batch['id'] and self.process else run['status']
+                try:round_time=datetime.datetime.strptime(run['directory'].name[:15],'%Y%m%d-%H%M%S').strftime('%m-%d %H:%M:%S')
+                except ValueError:round_time=timestamp
+                self.history_tree.insert(key,'end',iid=child,text=f"第 {run['repeat_index']} / {run['repeat_total']} 轮",values=(round_time,round_status+(f" · {run['failed']} 步失败" if run['failed'] else '')))
+        if selected and self.history_tree.exists(selected[0]):self.history_tree.selection_set(selected[0])
+        self.history_tree.yview_moveto(position)
+        self.after_idle(lambda:setattr(self,'_history_refreshing',False))
     def on_history_selected(self,event=None):
+        if event is not None and self._history_refreshing:return
         selected=self.history_tree.selection()
         if not selected:return
         if self.process:
@@ -196,8 +263,8 @@ class App(tk.Tk):
                 if values[2] in ('待执行','运行中'):
                     values[2]='未执行' if values[2]=='待执行' else '中断';self.steps.item(row,values=values,tags=('error',) if values[2]=='中断' else ())
             if not run['events'] and run['detail'].is_file():self.log_append(run['detail'].read_text(encoding='utf-8',errors='replace'),'muted')
-            self.run_status.config(text='历史：'+run['status'],foreground='#65758d');self.log_append('\n历史结果：'+run['status'],'success' if run['status']=='通过' else 'error')
-            self.tabs.select(self.overview_tab);self.say('正在查看历史执行记录；当前画布参数未改变')
+            self.run_status.config(text=f"历史 · 第 {run['repeat_index']}/{run['repeat_total']} 轮 · {run['status']}",foreground='#65758d');self.log_append('\n历史结果：'+run['status'],'success' if run['status']=='通过' else 'error')
+            self.tabs.select(self.overview_tab);self.update_history_navigation();self.say('正在查看历史执行记录；当前画布参数未改变')
         except (OSError,ValueError,KeyError,TypeError) as e:
             self.simulating=False;self.replaying=False;messagebox.showerror('无法读取历史记录',str(e))
     def reset_overview(self):
@@ -212,19 +279,18 @@ class App(tk.Tk):
         artifact=self.step_artifacts.get(str(index),{});path=artifact.get('preview')
         if path:self.last_preview=pathlib.Path(path);self.last_image_dir=self.last_preview.parent;self.show_large_image(path)
     def add_log_preview(self,path):
-        container=tk.Frame(self.log,bg='#ffffff');button=tk.Button(container,text='展开图片 ▾',bg='#ffffff',fg='#2457a5',activebackground='#edf4ff',relief='flat',bd=0,cursor='hand2',font=('Microsoft YaHei UI',9))
-        button.pack(anchor='w');preview=tk.Label(container,bg='#f5f7fb',cursor='hand2');state={'photo':None,'expanded':False}
-        def toggle():
-            if state['expanded']:
-                preview.pack_forget();state['expanded']=False;button.configure(text='展开图片 ▾');return
-            try:
-                with Image.open(path) as source:
-                    image=source.copy();image.thumbnail((360,150),Image.Resampling.LANCZOS)
-                state['photo']=ImageTk.PhotoImage(image,master=container);preview.configure(image=state['photo'])
-            except (OSError,ValueError,tk.TclError) as e:messagebox.showerror('无法预览',str(e));return
-            preview.pack(anchor='w',pady=(3,5));state['expanded']=True;button.configure(text='收起图片 ▴')
-        button.configure(command=toggle);preview.bind('<Button-1>',lambda e:self.show_large_image(path))
-        self.log_windows.append((container,button,preview,state));self.log.config(state='normal');self.log.window_create('end',window=container,padx=8,pady=2);self.log.insert('end','\n');self.log.see('end');self.log.config(state='disabled')
+        container=tk.Frame(self.log,bg='#ffffff');preview=tk.Label(container,bg='#f5f7fb',cursor='hand2',anchor='w');state={'photo':None,'expanded':True}
+        try:
+            with Image.open(path) as source:
+                image=source.copy();image.thumbnail((360,200),Image.Resampling.LANCZOS)
+            state['photo']=ImageTk.PhotoImage(image,master=container);preview.configure(image=state['photo'])
+        except (OSError,ValueError,tk.TclError):
+            container.destroy();self.log_append('图片预览不可用，请检查文件路径','error');return
+        preview.pack(anchor='w',pady=(3,5));preview.bind('<Button-1>',lambda e:self.show_large_image(path))
+        def scroll_log(event):
+            delta=event.delta;self.log.yview_scroll(-max(1,abs(delta)//120)*(1 if delta>0 else -1),'units');return 'break'
+        for widget in (container,preview):widget.bind('<MouseWheel>',scroll_log)
+        self.log_windows.append((container,None,preview,state));self.log.config(state='normal');self.log.window_create('end',window=container,padx=8,pady=2);self.log.insert('end','\n');self.log.see('end');self.log.config(state='disabled')
     def step_update(self,event):
         kind=event.get('event');idx=str(event.get('index',''));typ=event.get('type');p=event.get('params',{});label=TYPES.get(typ,(typ,))[0]
         if kind=='step_start':
@@ -251,8 +317,9 @@ class App(tk.Tk):
         if not self.commit_current():return
         self.destroy()
     def commit_current(self):
-        if self.case and self.selected is not None:
-            if not self.apply(): return False
+        if self.case:
+            if self.selected is not None and not self.apply(): return False
+            if not self.read_repeat_count():return False
             self.persist()
         return True
     def say(self,s):
@@ -275,20 +342,7 @@ class App(tk.Tk):
         if not self.last_preview:return messagebox.showinfo('暂无图片','当前还没有可打开的抓图。')
         self.show_large_image(self.last_preview)
     def show_large_image(self,path):
-        try:
-            with Image.open(path) as source:original=source.copy()
-        except (OSError,ValueError) as e:return messagebox.showerror('无法打开图片',str(e))
-        window=tk.Toplevel(self);window.title('抓图查看 · '+pathlib.Path(path).name);window.geometry('1100x760')
-        toolbar=ttk.Frame(window);toolbar.pack(fill='x',padx=8,pady=5)
-        ttk.Label(toolbar,text=str(path),foreground='#65758d').pack(side='left',fill='x',expand=True)
-        ttk.Button(toolbar,text='系统打开原文件',command=lambda:self.open_path(path)).pack(side='right')
-        view=tk.Label(window,bg='#18212e');view.pack(fill='both',expand=True,padx=8,pady=(0,8))
-        def resize(event=None):
-            width=max(1,view.winfo_width()-10);height=max(1,view.winfo_height()-10)
-            if width<20 or height<20:return
-            image=original.copy();image.thumbnail((width,height),Image.Resampling.LANCZOS)
-            view.photo=ImageTk.PhotoImage(image,master=view);view.configure(image=view.photo)
-        view.bind('<Configure>',resize);window.update_idletasks();resize()
+        self.hide_hover();self.open_path(path)
     def open_raw_log(self):self.open_path(self.raw_log_path if self.current_run_dir else None)
     def expand_log(self):
         window=tk.Toplevel(self);window.title('执行记录');window.geometry('1050x720')
@@ -413,8 +467,10 @@ class App(tk.Tk):
         folder.mkdir(parents=True,exist_ok=True)
         number=1
         while (folder/f'Case {number:03d}.case.json').exists(): number+=1
-        self.case=folder/f'Case {number:03d}.case.json'; self.nodes=[]; self.edges=[]; self.selected=None; self.show_params(); self.draw()
+        self.case=folder/f'Case {number:03d}.case.json'; self.repeat_count=1;self.repeat_var.set('1'); self.nodes=[]; self.edges=[]; self.selected=None; self.show_params(); self.draw()
         if self.save():
+            self.history_nav.pack_forget();self.history_snapshot_path=None;self.current_run_dir=None;self.last_preview=None;self.last_image_dir=None
+            self.clear_log();self.reset_overview();self.run_case_path=None;self.preview_case_path=None;self.node_status={};self.node_results={};self.node_artifacts={};self.run_status.config(text='待运行',foreground='#65758d');self.draw();self.refresh_history()
             self.tree.selection_set(str(self.case)); self.say('已创建 '+str(self.case.relative_to(self.project)))
     def select_case(self,e=None):
         selected=self.tree.selection()
@@ -426,19 +482,29 @@ class App(tk.Tk):
             if self.case == p:return
             if self.process:
                 self.tree.selection_set(str(self.case));self.say('请等待运行结束后切换 Case');return
-            if self.selected is not None:
-                if not self.apply():return
-                self.persist()
+            if not self.commit_current():return
             data=load_case(p)
-            self.case=p; self.folder=p.parent; self.nodes=data['nodes']; self.edges=data['edges']; self.linking=None; self.selected=None; self.selected_edge=None; self.show_params();self.clear_log();self.reset_overview();self.current_run_dir=None;self.last_preview=None;self.last_image_dir=None;self.history_snapshot_path=None;self.run_case_path=None;self.preview_case_path=None;self.node_status={};self.node_results={};self.node_artifacts={};self.hide_hover();self.run_status.config(text='待运行',foreground='#65758d');self.draw();self.refresh_history();self.say('已打开 '+p.name)
+            self.case=p; self.folder=p.parent; self.repeat_count=data.get('repeat_count',1);self.repeat_var.set(str(self.repeat_count)); self.nodes=data['nodes']; self.edges=data['edges']; self.linking=None; self.selected=None; self.selected_edge=None; self.show_params();self.clear_log();self.reset_overview();self.current_run_dir=None;self.last_preview=None;self.last_image_dir=None;self.history_snapshot_path=None;self.history_nav.pack_forget();self.run_case_path=None;self.preview_case_path=None;self.node_status={};self.node_results={};self.node_artifacts={};self.hide_hover();self.run_status.config(text='待运行',foreground='#65758d');self.draw();self.refresh_history();self.say('已打开 '+p.name)
         except Exception as ex: messagebox.showerror('打开失败',str(ex))
+    def repeat_changed(self,event=None):
+        try:value=int(self.repeat_var.get())
+        except ValueError:return
+        if 1<=value<=10000:self.repeat_count=value;self.persist()
+    def read_repeat_count(self):
+        try:
+            value=int(self.repeat_var.get())
+            if not 1<=value<=10000:raise ValueError()
+        except ValueError:
+            messagebox.showerror('重复次数无效','请输入 1 到 10000 之间的整数。');return False
+        self.repeat_count=value;return True
     def save(self):
         if not self.case: messagebox.showwarning('提示','请先新建或选择 Case'); return False
         if self.selected is not None and not self.apply(): return False
-        self.case.write_text(json.dumps({'version':2,'nodes':self.nodes,'edges':self.edges},ensure_ascii=False,indent=2),encoding='utf-8'); self.refresh(); self.say('已保存 '+self.case.name); return True
+        if not self.read_repeat_count():return False
+        self.case.write_text(json.dumps({'version':2,'repeat_count':self.repeat_count,'nodes':self.nodes,'edges':self.edges},ensure_ascii=False,indent=2),encoding='utf-8'); self.refresh(); self.say('已保存 '+self.case.name); return True
     def persist(self):
         if self.case:
-            self.case.write_text(json.dumps({'version':2,'nodes':self.nodes,'edges':self.edges},ensure_ascii=False,indent=2),encoding='utf-8')
+            self.case.write_text(json.dumps({'version':2,'repeat_count':self.repeat_count,'nodes':self.nodes,'edges':self.edges},ensure_ascii=False,indent=2),encoding='utf-8')
     def add(self,kind=None,x=None,y=None):
         if not self.case:
             self.new_case()
@@ -557,7 +623,16 @@ class App(tk.Tk):
     def cancel_hover_hide(self,event=None):
         if self.hide_timer is not None:self.after_cancel(self.hide_timer);self.hide_timer=None
     def schedule_hover_hide(self):
-        self.cancel_hover_hide();self.hide_timer=self.after(350,self.hide_hover)
+        if self.hover_timer is not None:self.after_cancel(self.hover_timer);self.hover_timer=None
+        if self.hover_window is None:self.hover_key=None;return
+        self.cancel_hover_hide();self.hide_timer=self.after(350,self.check_hover_pointer)
+    def check_hover_pointer(self):
+        self.hide_timer=None
+        if not self.hover_window:return
+        x,y=self.winfo_pointerxy();w=self.hover_window
+        inside=w.winfo_rootx()<=x<w.winfo_rootx()+w.winfo_width() and w.winfo_rooty()<=y<w.winfo_rooty()+w.winfo_height()
+        if inside:self.hide_timer=self.after(350,self.check_hover_pointer)
+        else:self.hide_hover()
     def hide_hover(self):
         if self.hover_timer is not None:self.after_cancel(self.hover_timer);self.hover_timer=None
         self.cancel_hover_hide()
@@ -601,7 +676,7 @@ class App(tk.Tk):
         for widget in (popup,frame,label,button):
             widget.bind('<Enter>',self.cancel_hover_hide,add='+');widget.bind('<Leave>',lambda e:self.schedule_hover_hide(),add='+')
         popup.update_idletasks();left=min(x+18,max(0,popup.winfo_screenwidth()-popup.winfo_reqwidth()-10));top=min(y+18,max(0,popup.winfo_screenheight()-popup.winfo_reqheight()-10))
-        popup.geometry(f'+{left}+{top}')
+        popup.geometry(f'+{left}+{top}');self.cancel_hover_hide();self.hide_timer=self.after(350,self.check_hover_pointer)
     def hit_tag(self,x,y,prefix):
         for item in reversed(self.canvas.find_overlapping(x-6,y-6,x+6,y+6)):
             for tag in self.canvas.gettags(item):
@@ -753,19 +828,22 @@ class App(tk.Tk):
                 self.log_append(f'✓ {message}  ·  {duration}','value' if typ in ('i2c_read','i2c_write','metrics') else 'success')
         elif kind=='step_error':
             self.step_failed=True;self.log_append('✕ '+event.get('message','执行失败')+('（继续执行后续步骤）' if event.get('continued') else ''),'error')
-    def run_real(self):
+    def run_real(self,continuing=False):
         if self.process:return messagebox.showwarning('正在运行','请等待当前 Case 完成')
+        if self.batch and not continuing:return messagebox.showwarning('正在运行','请等待重复执行完成')
         try:
             if not self.case:raise ValueError('请先保存 Case')
-            if not self.save():return
-            self.check()
+            if not continuing:
+                if not self.save():return
+                self.check()
+                self.batch={'total':self.repeat_count,'current':1,'failed_rounds':0,'id':uuid.uuid4().hex,'case_data':copy.deepcopy({'version':2,'repeat_count':self.repeat_count,'nodes':self.nodes,'edges':self.edges})}
             env=os.environ.copy();env['PYTHONIOENCODING']='utf-8';env['CANVAS_APP_DIR']=str(ROOT)
             runid=datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]
             run_dir=self.case.parent/'测试结果'/self.case.name.removesuffix('.case.json')/runid
             run_dir.mkdir(parents=True,exist_ok=False);self.current_run_dir=run_dir;self.last_image_dir=None;self.last_preview=None;self.step_failed=False
             logs_dir=run_dir/'日志';config_dir=run_dir/'配置';logs_dir.mkdir();config_dir.mkdir()
             self.raw_log_path=logs_dir/'底层完整日志.log';snapshot=config_dir/'执行快照.json';self.run_summary_path=run_dir/'运行摘要.json'
-            snapshot_data=resolve_paths({'version':2,'nodes':self.nodes,'edges':self.edges},self.case,ROOT,run_dir)
+            snapshot_data=resolve_paths(self.batch['case_data'],self.case,ROOT,run_dir)
             snapshot.write_text(json.dumps(snapshot_data,ensure_ascii=False,indent=2),encoding='utf-8')
             if getattr(sys,'frozen',False):
                 env['CANVAS_SDK_DIR']=env.get('CANVAS_SDK_DIR',str(ROOT/'sdk'))
@@ -773,26 +851,27 @@ class App(tk.Tk):
             else:command=[sys.executable,'-u',str(ROOT/'hardware_runner.py'),str(snapshot)]
             self.runlog=self.raw_log_path.open('w',encoding='utf-8');self.runlog.write('Case: '+str(self.case)+'\n');self.runlog.flush()
             self.readable_log=(logs_dir/'执行记录.txt').open('w',encoding='utf-8');self.event_file=(logs_dir/'步骤事件.jsonl').open('w',encoding='utf-8')
-            self.run_failures=[];self.run_summary={'status':'运行中','case':str(self.case),'started_at':datetime.datetime.now().isoformat(timespec='seconds'),'exit_code':None,'failed_count':0,'failures':[]}
+            self.run_failures=[];self.run_summary={'status':'运行中','case':str(self.case),'started_at':datetime.datetime.now().isoformat(timespec='microseconds'),'exit_code':None,'failed_count':0,'failures':[],'batch_id':self.batch['id'],'repeat_index':self.batch['current'],'repeat_total':self.batch['total']}
             self.run_summary_path.write_text(json.dumps(self.run_summary,ensure_ascii=False,indent=2),encoding='utf-8')
-            self.clear_log();self.reset_overview();self.run_status.config(text='运行中',foreground='#a86508')
+            self.history_nav.pack_forget();self.clear_log();self.reset_overview();self.run_status.config(text='运行中',foreground='#a86508')
             planned=execution_order(snapshot_data);self.run_case_path=self.case;self.preview_case_path=self.case;self.run_node_ids={i:node['id'] for i,node in enumerate(planned,1)};self.node_status={node['id']:'pending' for node in planned};self.node_results={};self.node_artifacts={};self.hide_hover();self.draw();self.simulating=True
             for i,node in enumerate(planned,1):self.step_update({'event':'step_start','index':i,'total':len(planned),'type':node['type'],'params':node['params']})
             self.simulating=False
             self.log_append('开始执行  '+datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'heading')
-            self.log_append('Case：'+self.case.name.removesuffix('.case.json'),'muted')
+            self.log_append('Case：'+self.case.name.removesuffix('.case.json')+f"  ·  第 {self.batch['current']} / {self.batch['total']} 轮",'muted')
             self.log_append('本次结果目录：','muted');self.log_append(str(run_dir),'path')
             self.process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace',env=env,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0));proc=self.process
             def reader():
                 for line in proc.stdout:self.messages.put(line.rstrip())
                 self.messages.put(('exit',proc.wait()))
-            threading.Thread(target=reader,daemon=True).start();self.say('正在执行 Case');self.after(100,self.poll_runner)
+            threading.Thread(target=reader,daemon=True).start();self.refresh_history();self.say(f"正在执行 Case · 第 {self.batch['current']} / {self.batch['total']} 轮");self.after(100,self.poll_runner)
         except Exception as e:
             if self.runlog:self.runlog.close();self.runlog=None
             if self.readable_log:self.readable_log.close();self.readable_log=None
             if self.event_file:self.event_file.close();self.event_file=None
             if self.run_summary:
                 self.run_summary.update(status='启动失败',error=str(e));self.run_summary_path.write_text(json.dumps(self.run_summary,ensure_ascii=False,indent=2),encoding='utf-8');self.run_summary=None
+            self.batch=None
             self.run_status.config(text='启动失败',foreground='#be3535');self.log_append('✕ 无法运行：'+str(e),'error');messagebox.showerror('无法运行',str(e))
     def poll_runner(self):
         try:
@@ -818,7 +897,18 @@ class App(tk.Tk):
                     if self.run_summary:
                         self.run_summary.update(status='通过' if success else '有失败' if completed_with_failures else '中断',exit_code=m[1],failed_count=len(self.run_failures),failures=self.run_failures,finished_at=datetime.datetime.now().isoformat(timespec='seconds'))
                         self.run_summary_path.write_text(json.dumps(self.run_summary,ensure_ascii=False,indent=2),encoding='utf-8');self.run_summary=None
-                    self.refresh_history();return
+                    self.refresh_history()
+                    if self.batch:
+                        batch=self.batch
+                        if not success:batch['failed_rounds']+=1
+                        if (success or completed_with_failures) and batch['current']<batch['total']:
+                            batch['current']+=1;self.run_real(continuing=True);return
+                        if batch['total']>1:
+                            text=f"重复执行结束：{batch['current']} / {batch['total']} 轮，{batch['failed_rounds']} 轮失败"
+                            if not success and not completed_with_failures:text+='（关键步骤中断）'
+                            self.say(text);self.run_status.config(text=text,foreground='#be3535' if batch['failed_rounds'] else '#168052');self.log_append(text,'error' if batch['failed_rounds'] else 'success')
+                        self.batch=None
+                    return
                 if self.runlog:self.runlog.write(m+'\n');self.runlog.flush()
                 if m.startswith('@@CANVAS_EVENT@@'):
                     try:
