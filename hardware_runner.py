@@ -5,6 +5,9 @@ if sys.stdout is not None and hasattr(sys.stdout,"reconfigure"): sys.stdout.reco
 if sys.stderr is not None and hasattr(sys.stderr,"reconfigure"): sys.stderr.reconfigure(encoding="utf-8",errors="replace")
 
 SDK = pathlib.Path(os.environ.get('CANVAS_SDK_DIR', str(pathlib.Path(__file__).resolve().parent / 'sdk')))
+# Minimum quiet time after completed actions. Explicit wait nodes count toward it.
+DEFAULT_SETTLE_SECONDS=0.07
+SETTLE_SECONDS={'relay_off':5.0,'relay_on':8.0}
 class Hardware:
  def __init__(self):
   self.directory=os.add_dll_directory(str(SDK)); os.environ['QT_QPA_PLATFORM_PLUGIN_PATH']=str(SDK/'platforms'); os.environ['QT_QPA_PLATFORM']='offscreen'
@@ -52,14 +55,21 @@ class Hardware:
    event=threading.Event(); result={}
    def notify(status,progress,error):
     print(f'固件下载：状态 {status}，进度 {progress}%，错误码 {error}',flush=True)
-    if status in (2,3,4): result.update(status=status,error=error);event.set()
+    if 0<=progress<=100: result['max_progress']=max(progress,result.get('max_progress',-1))
+    if status in (2,3,4): result.update(status=status,error=error,terminal_progress=progress);event.set()
    callback=callback_type(notify); lib.MatFwDownload.argtypes=[c.c_char_p,c.c_char_p,callback_type];lib.MatFwDownload.restype=c.c_int
    rc=lib.MatFwDownload(os.fsencode(p['ini']),os.fsencode(p['firmware']),callback)
-   if rc!=0: raise RuntimeError(f'固件下载启动失败，错误码 {rc}')
-   print('已启动下载，等待终态回调；请勿中断或断电',flush=True)
+   errors={-1:'无效参数',-2:'打开 INI 失败',-3:'打开固件失败',-4:'已有任务运行',-5:'打开设备失败',-6:'设备通信失败',-7:'固件不匹配',-8:'进入烧录模式失败',-9:'固件传输失败',-10:'设置地址失败',-100:'内部错误'}
+   if rc!=0 and not event.is_set():
+    raise RuntimeError(f'固件下载失败：接口返回 {rc}；无终态回调')
+   if not event.is_set(): print('已启动下载，等待终态回调；请勿中断或断电',flush=True)
    while not event.wait(60): print('固件下载仍在进行或等待回调，请勿中断',flush=True)
-   if result['status']!=2 or result['error']!=0: raise RuntimeError(f'固件下载失败或取消：{result}')
-   return '固件下载回调报告成功'
+   status,error=result['status'],result['error']; progress=result.get('max_progress',-1)
+   if status==2 and error==0 and rc in (0,2):return '固件下载回调报告成功'
+   if progress>=100:
+    message=f'进度已达100%，按测试要求视为完成；SDK状态 {status}、错误码 {error}、接口返回 {rc}；写入及校验结果未确认'
+    return {'message':message,'sdk_status':status,'sdk_error':error,'sdk_return':rc,'max_progress':progress,'verification':'未确认'}
+   raise RuntimeError(f'固件下载失败：接口返回 {rc}；回调状态 {status}，错误码 {error}（{errors.get(error,"未知错误")}），最高进度 {progress}%')
   if typ=='binary_patch':
    source=pathlib.Path(p['source']).resolve(); target=pathlib.Path(p['output']).resolve()
    if source==target or target.exists():raise ValueError('输出必须是不存在的新文件，不能覆盖源文件')
@@ -76,12 +86,19 @@ class Hardware:
    return f'{p["port"]} Channel {channel} 操作成功'
   if typ=='power_on':
    if self.dev:raise RuntimeError('设备已经打开')
-   self.dev=self.d.get_device(b'MAT130V300')
-   if not self.dev:raise RuntimeError('设备句柄创建失败')
-   self.d.device_setConfigure(self.dev,os.fsencode(p['ini'])); time.sleep(3)
-   if not self.d.device_open(self.dev):raise RuntimeError('设备打开失败')
-   if not self.d.device_open_video(self.dev):raise RuntimeError('视频流打开失败')
-   time.sleep(4);return '设备和视频流已打开'
+   handle=self.d.get_device(b'MAT130V300')
+   if not handle:raise RuntimeError('设备句柄创建失败')
+   opened=False
+   try:
+    self.d.device_setConfigure(handle,os.fsencode(p['ini'])); time.sleep(3)
+    if not self.d.device_open(handle):raise RuntimeError('设备打开失败')
+    opened=True
+    if not self.d.device_open_video(handle):raise RuntimeError('视频流打开失败')
+    self.dev=handle;time.sleep(4);return '设备和视频流已打开'
+   except Exception:
+    self.dev=None
+    if opened:self.d.device_close(handle)
+    raise
   if typ=='power_off':
    if not self.dev: raise RuntimeError('设备尚未打开')
    self.d.device_close(self.dev); self.dev=None;return '设备已关闭'
@@ -144,20 +161,36 @@ def main(path):
  if not nodes:raise ValueError('Case 没有节点')
  validate_steps(nodes)
  hw=Hardware();failures=[]
+ ready_at=0.0; previous_type=None
  try:
   for i,n in enumerate(nodes,1):
    emit('step_start',index=i,total=len(nodes),type=n['type'],params=n['params'])
    started=time.perf_counter()
    try:
+    if n['type']!='wait' and previous_type is not None:
+     remaining=ready_at-time.monotonic()
+     if remaining>0.0005:
+      print(f'自动稳定等待 {remaining:.3f} 秒（上一步 {previous_type}）',flush=True)
+      time.sleep(remaining)
     result=hw.run(n)
     if isinstance(result,dict):emit('step_done',index=i,type=n['type'],elapsed=time.perf_counter()-started,**result)
     else:emit('step_done',index=i,type=n['type'],elapsed=time.perf_counter()-started,message=str(result))
    except Exception as exc:
-    continued=n['type'] in ('i2c_read','i2c_write','metrics','capture')
+    continued=True
     failures.append({'index':i,'type':n['type'],'message':str(exc)})
     emit('step_error',index=i,type=n['type'],message=str(exc),continued=continued)
-    if not continued:raise
- finally:hw.close()
+   finally:
+    if n['type']!='wait':
+     previous_type=n['type'];ready_at=time.monotonic()+SETTLE_SECONDS.get(previous_type,DEFAULT_SETTLE_SECONDS)
+ finally:
+  # A following repeat starts a new process, so complete a final relay cooldown before release.
+  try:
+   if previous_type in SETTLE_SECONDS:
+    remaining=ready_at-time.monotonic()
+    if remaining>0.0005:
+     print(f'结束前自动稳定等待 {remaining:.3f} 秒（上一步 {previous_type}）',flush=True)
+     time.sleep(remaining)
+  finally:hw.close()
  emit('run_complete',failed_count=len(failures),failures=failures)
  print('真实流程完成'+(f'，{len(failures)} 个步骤失败' if failures else ''),flush=True)
  return 2 if failures else 0

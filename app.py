@@ -11,8 +11,8 @@ if getattr(sys,'frozen',False):
 else:ROOT=pathlib.Path(__file__).resolve().parent
 TYPES = {
     'wait': ('等待', {'seconds': 1.0}),
-    'relay_on': ('继电器开', {'port': 'COM3', 'channel': 0}),
-    'relay_off': ('继电器关', {'port': 'COM3', 'channel': 0}),
+    'relay_on': ('继电器开', {'port': 'COM7', 'channel': 0}),
+    'relay_off': ('继电器关', {'port': 'COM7', 'channel': 0}),
     'power_on': ('设备上电 / 初始化', {'ini': '${APPDIR}/assets/device.ini'}),
     'power_off': ('设备下电 / 关闭', {}),
     'i2c_read': ('I²C 读 / 断言', {'slave': '0x40', 'register': '0x00d8', 'address_bits': 16, 'data_bits': 32, 'expected': '', 'mask': '0xffffffff'}),
@@ -145,7 +145,7 @@ class App(tk.Tk):
         ttk.Label(top,text='自动化测试  /  工作台',font=('Microsoft YaHei UI',13,'bold'),foreground='#183153').pack(side='left',padx=(16,20),pady=12)
         for label,command in [('新建项目',self.new_project),('打开项目',self.open_project),('新建 Case',self.new_case),('保存',self.save),('校验',self.validate),('模拟运行',self.simulate),('真实运行',self.run_real)]:
             ttk.Button(top,text=label,command=command,style='Primary.TButton' if label=='真实运行' else 'TButton').pack(side='left',padx=3,pady=6)
-        ttk.Label(top,text='默认  COM3 / CHANNEL 0',foreground='#4c6b92').pack(side='right',padx=14)
+        ttk.Label(top,text='默认  COM7 / CHANNEL 0',foreground='#4c6b92').pack(side='right',padx=14)
         ttk.Label(top,text='重复次数').pack(side='left',padx=(10,2));self.repeat_entry=ttk.Spinbox(top,from_=1,to=10000,width=5,textvariable=self.repeat_var);self.repeat_entry.pack(side='left');self.repeat_entry.bind('<FocusOut>',self.repeat_changed)
         body=ttk.Panedwindow(self,orient='horizontal'); body.pack(fill='both',expand=True)
         left=ttk.Frame(body,width=220); body.add(left,weight=1)

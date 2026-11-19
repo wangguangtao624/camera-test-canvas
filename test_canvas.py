@@ -342,21 +342,24 @@ class CanvasTests(unittest.TestCase):
   self.assertEqual(result,2);self.assertEqual(calls,[x[0] for x in specs]+['close'])
   events=[json.loads(line[len('@@CANVAS_EVENT@@'):]) for line in out.getvalue().splitlines() if line.startswith('@@CANVAS_EVENT@@')]
   error=next(e for e in events if e['event']=='step_error');self.assertTrue(error['continued']);self.assertEqual(events[-1]['failed_count'],1)
- def test_critical_failure_stops_following_steps(self):
+ def test_critical_failure_continues_following_steps(self):
   import contextlib,io,hardware_runner as runner
   p=pathlib.Path(self.temp.name)/'flow.case.json';ini=self.w.project/'init.ini';ini.write_text('test',encoding='utf8')
   specs=[('power_on',{'ini':str(ini)}),('capture',{'output':'capture'}),('power_off',{})]
   nodes=[{'id':str(i),'x':i,'y':0,'type':t,'params':v} for i,(t,v) in enumerate(specs)];p.write_text(json.dumps({'version':2,'nodes':nodes,'edges':[{'from':str(i),'to':str(i+1)} for i in range(len(nodes)-1)]}),encoding='utf8')
   calls=[]
   class Fake:
-   def run(self,n):calls.append(n['type']);raise RuntimeError('上电失败')
+   def run(self,n):
+    calls.append(n['type'])
+    if n['type']=='power_on':raise RuntimeError('上电失败')
+    return 'ok'
    def close(self):calls.append('close')
   old=runner.Hardware;runner.Hardware=Fake
   try:
-   with contextlib.redirect_stdout(io.StringIO()):
-    with self.assertRaisesRegex(RuntimeError,'上电失败'):runner.main(p)
+   out=io.StringIO()
+   with contextlib.redirect_stdout(out):self.assertEqual(runner.main(p),2)
   finally:runner.Hardware=old
-  self.assertEqual(calls,['power_on','close'])
+  self.assertEqual(calls,['power_on','capture','power_off','close']);self.assertIn('"continued": true',out.getvalue())
  def test_click_capture_row_expands_and_collapses(self):
   from PIL import Image
   w=self.w;w.add('wait',20,20);image=w.project/'capture.png';Image.new('RGB',(80,40),'red').save(image);w.update()
